@@ -6,18 +6,14 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from subprocess import run
-from typing import List, Optional
+from textwrap import dedent
+from typing import List, Optional, Union
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants
-package_name = 'ab-hello'
-version = '0.0.1'
-arch = 'amd64'
-deb_filename = f'{package_name}_{version}_{arch}.deb'
 
-# --- Dataclasses ---
+# --- File Spec Types ---
 
 @dataclass
 class TarFileSpec(ABC):
@@ -35,9 +31,37 @@ class BinaryTarFileSpec(TarFileSpec):
     content: bytes
 
 
-# --- Archive builder ---
+ContentTarFileSpec = Union[TextTarFileSpec, BinaryTarFileSpec]
 
-def create_tar_gz_bytes(files: List[TarFileSpec], base_dir: Optional[str] = None) -> bytes:
+
+# --- Config Structs ---
+
+@dataclass
+class PackageMeta:
+    name: str
+    version: str
+    arch: str
+
+    @property
+    def deb_filename(self) -> str:
+        return f"{self.name}_{self.version}_{self.arch}.deb"
+
+
+@dataclass
+class DebFileSpec:
+    control_files: List[ContentTarFileSpec]
+    data_files: List[ContentTarFileSpec]
+
+
+@dataclass
+class DebPackageConfig:
+    meta: PackageMeta
+    files: DebFileSpec
+
+
+# --- Archive Builder ---
+
+def create_tar_gz_bytes(files: List[ContentTarFileSpec], base_dir: Optional[str] = None) -> bytes:
     with TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
 
@@ -68,58 +92,68 @@ def create_tar_gz_bytes(files: List[TarFileSpec], base_dir: Optional[str] = None
         return buf.getvalue()
 
 
-# --- Package content ---
-
-CONTROL_FILES: List[TarFileSpec] = [
-    TextTarFileSpec(
-        path="control",
-        mode=None,
-        content=f"""\
-Package: {package_name}
-Version: {version}
-Depends:
-Recommends:
-Section: main
-Priority: optional
-Homepage: https://github.com
-Architecture: {arch}
-Installed-Size: 10
-Maintainer: My Name <myemail@example.com>
-Description: ab-hello
-"""
-    )
-]
-
-DATA_FILES: List[TarFileSpec] = [
-    TextTarFileSpec(path="usr/bin/ab-hello", content="#!/bin/sh\necho hello\n", mode=0o755),
-]
-
-
 # --- DEB Builder ---
 
-def build_deb(deb_path: Path):
+def build_deb(config: DebPackageConfig):
+    output_path = Path(config.meta.deb_filename)
     with TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         logger.info("Created workspace: %s", tmp_path)
 
-        # Write debian-binary
+        # debian-binary
         (tmp_path / "debian-binary").write_text("2.0\n")
 
-        # Write tar.gz files
-        (tmp_path / "control.tar.gz").write_bytes(create_tar_gz_bytes(CONTROL_FILES))
-        (tmp_path / "data.tar.gz").write_bytes(create_tar_gz_bytes(DATA_FILES, base_dir="usr"))
+        # control.tar.gz
+        control_bytes = create_tar_gz_bytes(config.files.control_files)
+        (tmp_path / "control.tar.gz").write_bytes(control_bytes)
 
-        # Assemble with ar
+        # data.tar.gz
+        data_bytes = create_tar_gz_bytes(config.files.data_files, base_dir="usr")
+        (tmp_path / "data.tar.gz").write_bytes(data_bytes)
+
+        # Build .deb
         run(
-            ["ar", "vr", deb_path.absolute(), "debian-binary", "control.tar.gz", "data.tar.gz"],
+            ["ar", "vr", output_path.absolute(), "debian-binary", "control.tar.gz", "data.tar.gz"],
             cwd=tmp_path,
             check=True
         )
 
-        logger.info("✅ Created .deb package: %s", deb_path)
+        logger.info("✅ Created .deb package: %s", output_path)
 
 
 # --- Entrypoint ---
 
 if __name__ == "__main__":
-    build_deb(Path(deb_filename))
+    build_deb(DebPackageConfig(
+        meta=PackageMeta(
+            name="ab-hello",
+            version="0.0.1",
+            arch="amd64",
+        ),
+        files=DebFileSpec(
+            control_files=[
+                TextTarFileSpec(
+                    path="control",
+                    content=dedent("""\
+                        Package: ab-hello
+                        Version: 0.0.1
+                        Depends:
+                        Recommends:
+                        Section: main
+                        Priority: optional
+                        Homepage: https://github.com
+                        Architecture: amd64
+                        Maintainer: My Name <myemail@example.com>
+                        Description: ab-hello
+                        """),
+                    mode=None)
+            ],
+            data_files=[
+                TextTarFileSpec(
+                    path="usr/bin/ab-hello",
+                    content="#!/bin/sh\necho hello\n",
+                    mode=0o755,
+                )
+            ],
+        )
+    ))
