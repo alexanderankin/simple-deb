@@ -1,12 +1,11 @@
-import os
-import tarfile
-import tempfile
-import subprocess
 import logging
-import io
+import tarfile
+from tempfile import TemporaryDirectory
 from abc import ABC
-from pathlib import Path
 from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path
+from subprocess import run
 from typing import List, Optional
 
 logging.basicConfig(level=logging.INFO)
@@ -39,7 +38,7 @@ class BinaryTarFileSpec(TarFileSpec):
 # --- Archive builder ---
 
 def create_tar_gz_bytes(files: List[TarFileSpec], base_dir: Optional[str] = None) -> bytes:
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
 
         # Write files into temp dir
@@ -55,10 +54,10 @@ def create_tar_gz_bytes(files: List[TarFileSpec], base_dir: Optional[str] = None
                 raise Exception(f"unknown type: {type(f)} for {f}")
 
             if f.mode is not None:
-                os.chmod(full_path, f.mode)
+                full_path.chmod(f.mode)
 
         # Package into in-memory tar.gz
-        buf = io.BytesIO()
+        buf = BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
             if base_dir:
                 tar.add(tmp_path / base_dir, arcname=base_dir)
@@ -99,7 +98,7 @@ DATA_FILES: List[TarFileSpec] = [
 # --- DEB Builder ---
 
 def build_deb(deb_path: Path):
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         logger.info("Created workspace: %s", tmp_path)
 
@@ -111,7 +110,7 @@ def build_deb(deb_path: Path):
         (tmp_path / "data.tar.gz").write_bytes(create_tar_gz_bytes(DATA_FILES, base_dir="usr"))
 
         # Assemble with ar
-        subprocess.run(
+        run(
             ["ar", "vr", deb_path.absolute(), "debian-binary", "control.tar.gz", "data.tar.gz"],
             cwd=tmp_path,
             check=True
