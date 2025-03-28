@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # --- File Spec Types ---
 
+
 @dataclass
 class TarFileSpec(ABC):
     path: str  # Path inside the archive (relative)
@@ -36,6 +37,7 @@ ContentTarFileSpec = Union[TextTarFileSpec, BinaryTarFileSpec]
 
 # --- Config Structs ---
 
+
 @dataclass
 class PackageMeta:
     name: str
@@ -54,14 +56,44 @@ class DebFileSpec:
 
 
 @dataclass
+class ControlExtras:
+    depends: str = ""
+    recommends: str = ""
+    section: str = "main"
+    priority: str = "optional"
+    homepage: str = ""
+    maintainer: str = ""
+    description: str = ""
+
+    def render(self, meta: PackageMeta) -> str:
+        return dedent(f"""\
+            Package: {meta.name}
+            Version: {meta.version}
+            Depends: {self.depends}
+            Recommends: {self.recommends}
+            Section: {self.section}
+            Priority: {self.priority}
+            Homepage: {self.homepage}
+            Architecture: {meta.arch}
+            Installed-Size: 10
+            Maintainer: {self.maintainer}
+            Description: {self.description}
+        """).strip() + "\n"
+
+
+@dataclass
 class DebPackageConfig:
     meta: PackageMeta
+    control: ControlExtras
     files: DebFileSpec
 
 
 # --- Archive Builder ---
 
-def create_tar_gz_bytes(files: List[ContentTarFileSpec], base_dir: Optional[str] = None) -> bytes:
+
+def create_tar_gz_bytes(
+    files: List[ContentTarFileSpec], base_dir: Optional[str] = None
+) -> bytes:
     with TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
 
@@ -94,6 +126,7 @@ def create_tar_gz_bytes(files: List[ContentTarFileSpec], base_dir: Optional[str]
 
 # --- DEB Builder ---
 
+
 def build_deb(config: DebPackageConfig):
     output_path = Path(config.meta.deb_filename)
     with TemporaryDirectory() as tmpdir:
@@ -104,7 +137,9 @@ def build_deb(config: DebPackageConfig):
         (tmp_path / "debian-binary").write_text("2.0\n")
 
         # control.tar.gz
-        control_bytes = create_tar_gz_bytes(config.files.control_files)
+        control_content = config.control.render(config.meta)
+        control_spec = TextTarFileSpec(path="control", content=control_content, mode=None)
+        control_bytes = create_tar_gz_bytes(config.files.control_files + [control_spec])
         (tmp_path / "control.tar.gz").write_bytes(control_bytes)
 
         # data.tar.gz
@@ -112,48 +147,48 @@ def build_deb(config: DebPackageConfig):
         (tmp_path / "data.tar.gz").write_bytes(data_bytes)
 
         # Build .deb
+        logger.info("Creating .deb package: %s", output_path)
         run(
-            ["ar", "vr", output_path.absolute(), "debian-binary", "control.tar.gz", "data.tar.gz"],
+            [
+                "ar",
+                "vr",
+                output_path.absolute(),
+                "debian-binary",
+                "control.tar.gz",
+                "data.tar.gz",
+            ],
             cwd=tmp_path,
-            check=True
+            check=True,
         )
-
-        logger.info("✅ Created .deb package: %s", output_path)
+        logger.info("Created .deb package: %s", output_path)
 
 
 # --- Entrypoint ---
 
 if __name__ == "__main__":
-    build_deb(DebPackageConfig(
-        meta=PackageMeta(
-            name="ab-hello",
-            version="0.0.1",
-            arch="amd64",
-        ),
-        files=DebFileSpec(
-            control_files=[
-                TextTarFileSpec(
-                    path="control",
-                    content=dedent("""\
-                        Package: ab-hello
-                        Version: 0.0.1
-                        Depends:
-                        Recommends:
-                        Section: main
-                        Priority: optional
-                        Homepage: https://github.com
-                        Architecture: amd64
-                        Maintainer: My Name <myemail@example.com>
-                        Description: ab-hello
-                        """),
-                    mode=None)
-            ],
-            data_files=[
-                TextTarFileSpec(
-                    path="usr/bin/ab-hello",
-                    content="#!/bin/sh\necho hello\n",
-                    mode=0o755,
-                )
-            ],
+    build_deb(
+        DebPackageConfig(
+            meta=PackageMeta(
+                name="ab-hello",
+                version="0.0.1",
+                arch="amd64",
+            ),
+            control=ControlExtras(
+                section="main",
+                priority="optional",
+                homepage="https://github.com",
+                maintainer="My Name <myemail@example.com>",
+                description="ab-hello",
+            ),
+            files=DebFileSpec(
+                control_files=[],
+                data_files=[
+                    TextTarFileSpec(
+                        path="usr/bin/ab-hello",
+                        content="#!/bin/sh\necho hello\n",
+                        mode=0o755,
+                    )
+                ],
+            ),
         )
-    ))
+    )
