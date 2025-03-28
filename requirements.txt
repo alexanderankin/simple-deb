@@ -1,1 +1,2 @@
 libarchive-c
+python-debian

@@ -1,8 +1,12 @@
 import os
 import tarfile
-import gzip
-import shutil
-from debian import arfile
+import tempfile
+import subprocess
+import logging
+from pathlib import Path
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Define package details
 package_name = 'ab-hello'
@@ -10,57 +14,64 @@ version = '0.0.1'
 arch = 'amd64'
 deb_filename = f'{package_name}_{version}_{arch}.deb'
 
-# Step 1: Create the debian-binary file
-with open('debian-binary', 'w') as f:
-    f.write('2.0\n')
-
-# Step 2: Create the control.tar.gz archive
-os.mkdir('control')
 control_content = f"""\
 Package: {package_name}
 Version: {version}
+Depends:
+Recommends:
 Section: main
 Priority: optional
-Architecture: {arch}
-Maintainer: Your Name <your.email@example.com>
-Description: A simple hello world package
+Homepage: https://github.com
+Architecture: amd64
+Installed-Size: 10
+Maintainer: My Name <myemail@example.com>
+Description: ab-hello
 """
-with open('control/control', 'w') as f:
-    f.write(control_content)
 
-with tarfile.open('control.tar.gz', 'w:gz') as tar:
-    tar.add('control', arcname='.')
+def create_control_tar_gz(control_tar_path: Path):
+    with tempfile.TemporaryDirectory() as control_tmpdir:
+        control_dir = Path(control_tmpdir)
+        control_file = control_dir / "control"
+        control_file.write_text(control_content)
 
-shutil.rmtree('control')
+        with tarfile.open(control_tar_path, "w:gz", format=tarfile.GNU_FORMAT) as tar:
+            tar.add(control_file, arcname="control")
 
-# Step 3: Create the data.tar.gz archive
-os.makedirs('data/usr/bin', exist_ok=True)
-script_content = '#!/bin/sh\necho hello\n'
-with open('data/usr/bin/ab-hello', 'w') as f:
-    f.write(script_content)
-os.chmod('data/usr/bin/ab-hello', 0o755)
+def create_data_tar_gz(data_tar_path: Path):
+    with tempfile.TemporaryDirectory() as data_tmpdir:
+        data_dir = Path(data_tmpdir)
+        usr_bin = data_dir / "usr/bin"
+        usr_bin.mkdir(parents=True)
+        ab_hello = usr_bin / "ab-hello"
+        ab_hello.write_text("#!/bin/sh\necho hello\n")
+        os.chmod(ab_hello, 0o755)
 
-with tarfile.open('data.tar.gz', 'w:gz') as tar:
-    tar.add('data', arcname='.')
+        with tarfile.open(data_tar_path, "w:gz", format=tarfile.GNU_FORMAT) as tar:
+            tar.add(data_dir / "usr", arcname="usr")
 
-shutil.rmtree('data')
+def build_deb(deb_path: Path):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        logger.info("created temporary workspace: %s", tmpdir)
+        tmp_path = Path(tmpdir)
 
-# Step 4: Assemble the .deb package using arfile
-# Step 4: Assemble the .deb package using arfile
-deb_fp = open(deb_filename, 'wb')
-ar = arfile.ArFile(deb_fp, mode='w')
+        # 1. debian-binary
+        debian_binary = tmp_path / "debian-binary"
+        debian_binary.write_text("2.0\n")
 
-ar.addfile(arfile.ArInfo('debian-binary', size=os.path.getsize('debian-binary')), open('debian-binary', 'rb'))
-ar.addfile(arfile.ArInfo('control.tar.gz', size=os.path.getsize('control.tar.gz')), open('control.tar.gz', 'rb'))
-ar.addfile(arfile.ArInfo('data.tar.gz', size=os.path.getsize('data.tar.gz')), open('data.tar.gz', 'rb'))
+        # 2. control.tar.gz
+        control_tar = tmp_path / "control.tar.gz"
+        create_control_tar_gz(control_tar)
 
-ar.close()
-deb_fp.close()
+        # 3. data.tar.gz
+        data_tar = tmp_path / "data.tar.gz"
+        create_data_tar_gz(data_tar)
 
-# Clean up intermediate files
-os.remove('debian-binary')
-os.remove('control.tar.gz')
-os.remove('data.tar.gz')
+        # 4. Final .deb using ar
+        command = ["ar", "vr", deb_path.absolute(), "debian-binary", "control.tar.gz", "data.tar.gz"]
+        logger.info("Building debian binary in %s with command %s, contents: %s", tmpdir, command, [*Path(tmpdir).iterdir()])
+        subprocess.run(command, cwd=tmp_path, check=True)
 
-print(f'Debian package {deb_filename} created successfully.')
+        logger.info("✅ Created .deb package: %s", deb_path)
 
+if __name__ == "__main__":
+    build_deb(Path(deb_filename))
