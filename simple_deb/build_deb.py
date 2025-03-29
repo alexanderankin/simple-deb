@@ -66,7 +66,8 @@ class ControlExtras:
     description: str = ""
 
     def render(self, meta: PackageMeta) -> str:
-        return dedent(f"""\
+        return (
+            dedent(f"""\
             Package: {meta.name}
             Version: {meta.version}
             Depends: {self.depends}
@@ -78,7 +79,9 @@ class ControlExtras:
             Installed-Size: 10
             Maintainer: {self.maintainer}
             Description: {self.description}
-        """).strip() + "\n"
+        """).strip()
+            + "\n"
+        )
 
 
 @dataclass
@@ -138,7 +141,9 @@ def build_deb(config: DebPackageConfig):
 
         # control.tar.gz
         control_content = config.control.render(config.meta)
-        control_spec = TextTarFileSpec(path="control", content=control_content, mode=None)
+        control_spec = TextTarFileSpec(
+            path="control", content=control_content, mode=None
+        )
         control_bytes = create_tar_gz_bytes(config.files.control_files + [control_spec])
         (tmp_path / "control.tar.gz").write_bytes(control_bytes)
 
